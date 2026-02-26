@@ -1,0 +1,820 @@
+library(shiny)
+library(shinythemes)
+library(DT)
+library(writexl)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(stringr)
+
+concentration_order <- c("10nM", "20nM", "500nM", "1μM", "3μM", "10μM", "25μM", "50μM", "100μM")
+exposuretime_order <- c("1h", "24h", "48h", "96h", "8d", "10d")
+
+filter_vars <- c("Contaminant", "Species", "Concentration", "ExposureTime", "Age")
+
+get_custom_order <- function(var_name, values) {
+  if (var_name == "Concentration") {
+    custom_order <- c("10nM", "20nM", "500nM", "1μM", "3μM", "10μM", "25μM", "50μM", "100μM")
+    ordered_vals <- custom_order[custom_order %in% values]
+    remaining_vals <- sort(setdiff(values, ordered_vals))
+    return(c(ordered_vals, remaining_vals))
+  }
+  else if (var_name == "ExposureTime") {
+    custom_order <- c("1h", "24h", "48h", "96h", "8d", "10d")
+    ordered_vals <- custom_order[custom_order %in% values]
+    remaining_vals <- sort(setdiff(values, ordered_vals))
+    return(c(ordered_vals, remaining_vals))
+  }
+  else {
+    return(sort(values))
+  }
+}
+
+# ==============================================================================
+# UI
+# ==============================================================================
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      body {font-family: 'Arial', sans-serif; background-color: #f8f9fa; color: #2c3e50;}
+      .main-title {font-size: 22px; font-weight: 600; color: #1a237e; text-align: center; margin: 20px 0 30px 0;}
+      .well {background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 15px;}
+      .well h4 {font-size: 14px; font-weight: 600; color: #2c3e50; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px; margin-bottom: 15px;}
+      .nav-tabs {border-bottom: 1px solid #e0e0e0; margin-bottom: 15px;}
+      .nav-tabs>li>a {font-size: 13px; color: #546e7a; border-radius: 4px 4px 0 0; padding: 8px 15px;}
+      .nav-tabs>li.active>a {background-color: #ffffff; color: #1a237e; border-color: #e0e0e0 #e0e0e0 #ffffff; font-weight: 600;}
+      .dataTable {font-size: 12px !important; width: 100% !important;}
+      .dataTable td {text-align: center !important; padding: 8px !important;}
+      .dataTable th {text-align: center !important; font-weight: 600 !important; padding: 10px !important; background-color: #f5f7fa !important;}
+      .dt-buttons {margin-bottom: 10px !important;}
+      .dt-button {font-size: 12px !important; padding: 6px 12px !important; border-radius: 4px !important; background-color: #3949ab !important; border: none !important; color: white !important;}
+      .dt-button:hover {background-color: #283593 !important;}
+      .filter-panel {background-color: #f5f7fa; border-radius: 6px; padding: 12px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;}
+      .filter-panel label {font-size: 12px; font-weight: 600; color: #2c3e50; margin: 0;}
+      .filter-panel select {font-size: 12px; padding: 6px; border-radius: 4px; border: 1px solid #e0e0e0; width: 180px;}
+      .plot-download-btn {font-size: 12px; padding: 8px 15px; border-radius: 4px; background-color: #3949ab; color: white; border: none; margin-top: 10px;}
+      .plot-download-btn:hover {background-color: #283593; cursor: pointer;}
+      .labeled-genes-title {font-size: 14px; font-weight: 600; color: #1a237e; margin: 20px 0 10px 0;}
+      .gene-search-panel {background-color: #f0f4f8; border-radius: 8px; padding: 15px; margin-bottom: 20px; border: 1px solid #dee2e6;}
+      .gene-search-panel h4 {margin-top: 0; color: #1a237e; font-size: 16px;}
+    "))
+  ),
+  
+  div(class = "main-title", "PPCP Adipocyte Transcriptomics Toolkit"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 3,
+      h4("Screening Thresholds"),
+      numericInput("logfc_cutoff", "|logFC| ≥", value = 1.0, step = 0.1, min = 0, width = "100%"),
+      numericInput("adjp_cutoff", "Adj. P <", value = 0.05, step = 0.01, min = 0, max = 1, width = "100%")
+    ),
+    mainPanel(
+      width = 9,
+      tabsetPanel(
+        id = "active_tab",
+
+        tabPanel("Transcriptomic Summary Data", DTOutput("all_data", height = "620px")),
+
+        tabPanel("Differentially Expressed Genes (DEGs) Quantification",
+                 div(class = "filter-panel",
+                     tags$label("Filter by:"),
+                     selectInput("deg_count_filter_var", NULL, choices = filter_vars, selected = "Concentration", width = "150px"),
+                     uiOutput("deg_count_filter_val")
+                 ),
+
+                 h4(textOutput("deg_count_total")),
+
+                 h4("Differential Genes (DEGs)"),
+                 DTOutput("sig_data", height = "400px"),
+
+                 h4("DEG Count Summary"),
+                 plotOutput("deg_count_plot", width = "1600px", height = "1600px"),
+                 actionButton("download_count", "Download DEG Count Plot", class = "plot-download-btn")
+        ),
+
+        tabPanel("Transcriptomic Expression Visualization",
+                 div(class = "filter-panel",
+                     tags$label("Filter by:"),
+                     selectInput("expr_plot_filter_var", NULL, choices = filter_vars, selected = "Concentration", width = "150px"),
+                     uiOutput("expr_plot_filter_val"),
+                     tags$label("Plot Type:"),
+                     selectInput("plot_type", NULL, choices = c("Volcano Plot", "MA Plot"), selected = "Volcano Plot", width = "180px")
+                 ),
+
+                 h4(textOutput("expr_plot_total_deg")),
+
+                 plotOutput("expr_plot", width = "1600px", height = "1600px"),
+                 actionButton("download_expr_plot", "Download Plot", class = "plot-download-btn"),
+
+                 div(class = "labeled-genes-title", "Top 10 Up/Down Regulated Genes (Labeled on Plot)"),
+                 DTOutput("expr_labeled_genes", height = "300px")
+        ),
+
+        tabPanel("Targeted Adipocyte Gene Expression Profiling",
+                 div(class = "gene-search-panel",
+                     h4("Gene Expression Search"),
+                     textInput("target_genes", "Target Genes (comma separated)", placeholder = "e.g. Gene1,Gene2,Gene3", width = "100%"),
+                     selectInput("expression_condition", "Group by Condition", 
+                                 choices = c("Contaminant", "Concentration", "ExposureTime", "Species", "Age"), 
+                                 selected = "Concentration", width = "100%"),
+                     selectInput("plot_style", "Plot Style", 
+                                 choices = c("Bar Plot (Mean ± SD)", "Violin Plot", "Box Plot"), 
+                                 selected = "Bar Plot (Mean ± SD)", width = "100%"),
+                     actionButton("search_gene", "Search & Plot", class = "plot-download-btn", width = "100%")
+                 ),
+
+                 plotOutput("gene_expr_plot", width = "1600px", height = "1000px"),
+
+                 h4("Gene Expression Details"),
+                 DTOutput("gene_expr_table", height = "400px")
+        )
+      )
+    )
+  )
+)
+
+# ==============================================================================
+# Server
+# ==============================================================================
+server <- function(input, output, session) {
+
+  summary_data_base <- reactive({
+
+    req(exists("data_input"), nrow(data_input) > 0, "data_input not found or empty!")
+    
+    data <- as.data.frame(data_input)
+    data <- unique(data)
+    
+    if (!"GeneID" %in% colnames(data)) stop("Data must contain 'GeneID' column!")
+    
+
+    data$logFC <- as.numeric(as.character(data$logFC))
+    data$adjPval <- as.numeric(as.character(data$adjPval))
+    data$AveExpr <- as.numeric(as.character(data$AveExpr))
+    data$adj.P.Val <- data$adjPval
+    
+
+    core_cols <- c("GeneID", "logFC", "adjPval", "AveExpr")
+    data <- data[complete.cases(data[, core_cols]), ]
+    
+    data$sig <- ifelse(
+      !is.na(data$logFC) & !is.na(data$adjPval) & 
+        abs(data$logFC) >= input$logfc_cutoff & data$adjPval < input$adjp_cutoff,
+      ifelse(data$logFC > 0, "Up-regulated", "Down-regulated"),
+      "Not significant"
+    )
+    data$sig <- factor(data$sig, levels = c("Up-regulated", "Down-regulated", "Not significant"))
+    
+
+    if ("Concentration" %in% colnames(data)) {
+      data$Concentration <- factor(
+        data$Concentration,
+        levels = get_custom_order("Concentration", unique(data$Concentration))
+      )
+    }
+    if ("ExposureTime" %in% colnames(data)) {
+      data$ExposureTime <- factor(
+        data$ExposureTime,
+        levels = get_custom_order("ExposureTime", unique(data$ExposureTime))
+      )
+    }
+    
+    message(paste("Valid summary data rows:", nrow(data)))
+    return(data)
+  })
+  
+
+  output$deg_count_filter_val <- renderUI({
+    data <- summary_data_base()
+    selected_var <- input$deg_count_filter_var
+    
+
+    unique_vals <- if (!is.null(data[[selected_var]])) unique(data[[selected_var]]) else character(0)
+    ordered_vals <- get_custom_order(selected_var, unique_vals)
+    
+
+    if (length(ordered_vals) == 0) {
+      ordered_vals <- "No valid data"
+    }
+    
+    selectInput("deg_count_filter_val", NULL, choices = ordered_vals, 
+                selected = ordered_vals[1], width = "180px")
+  })
+  
+  output$expr_plot_filter_val <- renderUI({
+    data <- summary_data_base()
+    selected_var <- input$expr_plot_filter_var
+    
+
+    unique_vals <- if (!is.null(data[[selected_var]])) unique(data[[selected_var]]) else character(0)
+    ordered_vals <- get_custom_order(selected_var, unique_vals)
+    
+
+    if (length(ordered_vals) == 0) {
+      ordered_vals <- "No valid data"
+    }
+    
+    selectInput("expr_plot_filter_val", NULL, choices = ordered_vals, 
+                selected = ordered_vals[1], width = "180px")
+  })
+  
+
+  filtered_global_data <- reactive({
+    req(summary_data_base())
+    active_tab <- input$active_tab
+    filter_var <- NULL
+    filter_val <- NULL
+    
+
+    if (active_tab == "Differentially Expressed Genes (DEGs) Quantification") {
+      filter_var <- input$deg_count_filter_var
+      filter_val <- input$deg_count_filter_val
+    } else if (active_tab == "Transcriptomic Expression Visualization") {
+      filter_var <- input$expr_plot_filter_var
+      filter_val <- input$expr_plot_filter_val
+    } else {
+
+      total_deg <- sum(summary_data_base()$sig != "Not significant", na.rm = TRUE)
+      return(list(
+        data = summary_data_base(),
+        filter_var = NA,
+        filter_val = NA,
+        n_rows = nrow(summary_data_base()),
+        deg_count = ifelse(is.na(total_deg), 0, total_deg)  # 确保不是NA
+      ))
+    }
+    
+
+    if (is.null(filter_val) || filter_val == "No valid data" || filter_val == "") {
+      return(list(
+        data = data.frame(),
+        filter_var = filter_var,
+        filter_val = filter_val,
+        n_rows = 0,
+        deg_count = 0
+      ))
+    }
+    
+    data <- summary_data_base()
+
+    if (!filter_var %in% colnames(data)) {
+      showNotification(paste0("Column '", filter_var, "' not found in data!"), type = "error", duration = 3)
+      return(list(
+        data = data.frame(),
+        filter_var = filter_var,
+        filter_val = filter_val,
+        n_rows = 0,
+        deg_count = 0
+      ))
+    }
+    
+
+    filtered <- data[data[[filter_var]] == filter_val, ]
+    filtered <- filtered[complete.cases(filtered[, c("GeneID", "logFC", "adjPval", "AveExpr")]), ]
+    
+
+    deg_count <- sum(filtered$sig != "Not significant", na.rm = TRUE)
+    deg_count <- ifelse(is.na(deg_count) || length(deg_count) == 0, 0, deg_count)
+    n_filtered <- nrow(filtered)
+    
+    message(paste0(active_tab, " filtered rows: ", n_filtered, ", DEG count: ", deg_count))
+    
+    if (n_filtered == 0) {
+      showNotification(paste0("No valid data for ", filter_var, " = ", filter_val), type = "warning", duration = 2)
+    }
+    
+    return(list(
+      data = filtered,
+      filter_var = filter_var,
+      filter_val = filter_val,
+      n_rows = n_filtered,
+      deg_count = deg_count
+    ))
+  })
+  
+  # -------------------------- 1. Summary Data --------------------------
+  output$all_data <- renderDT({
+    data <- summary_data_base()
+    if (nrow(data) == 0) {
+      return(datatable(
+        data.frame(Message = "No valid summary data available"),
+        rownames = FALSE,
+        options = list(dom = "t")
+      ))
+    }
+    
+    datatable(
+      data,
+      rownames = FALSE,
+      filter = "top",
+      extensions = c("Buttons", "Scroller"),
+      options = list(
+        scrollY = 580,
+        scrollX = TRUE,
+        scroller = TRUE,
+        pageLength = 10,
+        dom = "Bfrtip",
+        buttons = c("excel", "csv"),
+        autoWidth = TRUE,
+        searchHighlight = TRUE,
+        processing = TRUE,
+        deferRender = TRUE
+      )
+    ) %>%
+      formatRound("logFC", 3) %>%
+      formatRound("adjPval", 4)
+  }, server = TRUE)
+  
+  # -------------------------- 2. DEGs & Count Analysis --------------------------
+
+  output$deg_count_total <- renderText({
+    global_data <- filtered_global_data()
+    deg_count <- global_data$deg_count
+    filter_var <- ifelse(is.na(global_data$filter_var), "All Data", global_data$filter_var)
+    filter_val <- ifelse(is.na(global_data$filter_val), "All Values", global_data$filter_val)
+    
+    paste0("Total DEGs: ", deg_count, " (", filter_var, " = ", filter_val, ")")
+  })
+  
+
+  output$sig_data <- renderDT({
+    global_data <- filtered_global_data()
+    data <- global_data$data
+    deg_count <- global_data$deg_count
+    
+
+    if (deg_count == 0 || nrow(data) == 0) {
+      showNotification("No DEGs detected with current thresholds.", type = "warning", duration = 2)
+      return(datatable(
+        data.frame(Message = "No DEGs detected with current thresholds"),
+        rownames = FALSE,
+        options = list(dom = "t")
+      ))
+    }
+    
+    deg <- subset(data, sig != "Not significant")
+    deg <- deg[order(-abs(deg$logFC), deg$adjPval), ]
+    
+    datatable(
+      deg,
+      rownames = FALSE,
+      filter = "top",
+      extensions = c("Buttons", "Scroller"),
+      options = list(
+        scrollY = 360,
+        scrollX = TRUE,
+        scroller = TRUE,
+        pageLength = 10,
+        dom = "Bfrtip",
+        buttons = c("excel", "csv"),
+        autoWidth = TRUE,
+        searchHighlight = TRUE,
+        processing = TRUE,
+        deferRender = TRUE
+      )
+    ) %>%
+      formatRound("logFC", 3) %>%
+      formatRound("adjPval", 4) %>%
+      formatStyle(
+        columns = "logFC",
+        color = styleInterval(c(-input$logfc_cutoff, input$logfc_cutoff), c("#e53935", "#2c3e50", "#1e88e5")),
+        fontWeight = "bold"
+      )
+  }, server = TRUE)
+  
+
+  deg_count_filtered <- reactive({
+    global_data <- filtered_global_data()
+    plot_data <- global_data$data
+    filter_var <- global_data$filter_var
+    deg_count <- global_data$deg_count
+    
+
+    if (deg_count == 0 || nrow(plot_data) == 0 || is.null(filter_var)) {
+      return(data.frame(FilterVar = character(), Regulation = character(), Count = integer()))
+    }
+    
+    count_df <- as.data.frame(table(
+      FilterVar = plot_data[[filter_var]],
+      Regulation = plot_data$sig
+    ))
+    colnames(count_df) <- c("FilterVar", "Regulation", "Count")
+    count_df <- count_df[count_df$Regulation != "Not significant", ]
+    
+
+    count_df$FilterVar <- factor(
+      count_df$FilterVar,
+      levels = get_custom_order(filter_var, unique(count_df$FilterVar))
+    )
+    
+    return(count_df)
+  })
+  
+
+  output$deg_count_plot <- renderPlot({
+    count_df <- deg_count_filtered()
+    global_data <- filtered_global_data()
+    filter_var <- global_data$filter_var
+    deg_count <- global_data$deg_count
+    
+
+    if (is.na(deg_count) || deg_count == 0 || nrow(count_df) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0, y = 0, label = "No significant DEGs to plot", size = 4, color = "#546e7a") +
+               theme_minimal() + theme(panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank()))
+    }
+    
+    ggplot(count_df, aes(x = FilterVar, y = Count, fill = Regulation)) +
+      geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.8) +
+      geom_text(aes(label = Count), position = position_dodge(width = 0.8), vjust = -0.5, size = 3, color = "black", fontface = "bold") +
+      scale_fill_manual(values = c("Up-regulated" = "#1e88e5", "Down-regulated" = "#e53935"), name = NULL) +
+      labs(x = filter_var, y = "Number of DEGs", title = paste0("DEG Count Summary (Total: ", deg_count, ")")) +
+      theme_bw(base_family = "Arial", base_size = 11) +
+      theme(
+        panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.position = "top",
+        plot.margin = margin(10, 10, 10, 10, "mm"),
+        plot.title = element_text(size = 14, hjust = 0.5, face = "bold")
+      )
+  }, res = 300)
+  
+  # -------------------------- 3. Expression Plots (Volcano/MA) --------------------------
+
+  output$expr_plot_total_deg <- renderText({
+    global_data <- filtered_global_data()
+    deg_count <- global_data$deg_count
+    filter_var <- ifelse(is.na(global_data$filter_var), "All Data", global_data$filter_var)
+    filter_val <- ifelse(is.na(global_data$filter_val), "All Values", global_data$filter_val)
+    
+    paste0("Total DEGs: ", deg_count, " (", filter_var, " = ", filter_val, ")")
+  })
+  
+
+  expr_plot_data <- reactive({
+    global_data <- filtered_global_data()
+    plot_data <- global_data$data
+    deg_count <- global_data$deg_count
+    
+
+    if (is.na(deg_count) || deg_count == 0 || nrow(plot_data) == 0) {
+      return(list(plot_data = data.frame(), labeled_genes = data.frame(), deg_count = 0))
+    }
+    
+
+    up_genes <- plot_data %>% 
+      filter(sig == "Up-regulated") %>% 
+      arrange(desc(logFC)) %>% 
+      head(min(10, nrow(.)))
+    
+    down_genes <- plot_data %>% 
+      filter(sig == "Down-regulated") %>% 
+      arrange(logFC) %>% 
+      head(min(10, nrow(.)))
+    
+
+    labeled_genes <- bind_rows(up_genes, down_genes) %>% 
+      select(GeneID, AveExpr, logFC, adjPval, sig, any_of(filter_vars)) %>% 
+      arrange(sig, desc(abs(logFC)))
+    
+    message(paste0("Expression plot data rows: ", nrow(plot_data), ", DEG count: ", deg_count))
+    
+    return(list(plot_data = plot_data, labeled_genes = labeled_genes, deg_count = deg_count))
+  })
+  
+
+  output$expr_plot <- renderPlot({
+    data_list <- expr_plot_data()
+    plot_data <- data_list$plot_data
+    labeled_genes <- data_list$labeled_genes
+    deg_count <- data_list$deg_count
+    
+
+    if (is.na(deg_count) || deg_count == 0 || nrow(plot_data) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0, y = 0, label = "No valid data to plot", size = 4, color = "#546e7a") +
+               theme_minimal() + theme(panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank()))
+    }
+    
+
+    if (input$plot_type == "Volcano Plot") {
+      p <- ggplot(plot_data, aes(x = logFC, y = -log10(adjPval), color = sig)) +
+        geom_point(alpha = 0.8, size = 1.2) +
+        geom_vline(xintercept = c(-input$logfc_cutoff, input$logfc_cutoff), linetype = "dashed", color = "gray50") +
+        geom_hline(yintercept = -log10(input$adjp_cutoff), linetype = "dashed", color = "gray50") +
+        labs(x = "log2(Fold Change)", y = "-log10(Adjusted P-value)", 
+             title = paste0("Volcano Plot (Total DEGs: ", deg_count, ")"))
+    } else {
+      p <- ggplot(plot_data, aes(x = AveExpr, y = logFC, color = sig)) +
+        geom_point(alpha = 0.8, size = 1.2) +
+        geom_hline(yintercept = c(-input$logfc_cutoff, input$logfc_cutoff), linetype = "dashed", color = "gray50") +
+        labs(x = "Average Expression", y = "log2(Fold Change)", 
+             title = paste0("MA Plot (Total DEGs: ", deg_count, ")"))
+    }
+    
+
+    p + 
+      geom_label_repel(
+        data = labeled_genes,
+        aes(label = GeneID),
+        size = 2,
+        fill = "white",
+        color = "black",
+        alpha = 0.8,
+        box.padding = unit(0.3, "lines"),
+        point.padding = unit(0.5, "lines"),
+        segment.color = "gray50",
+        segment.size = 0.3,
+        show.legend = FALSE,
+        max.overlaps = 20
+      ) +
+      scale_color_manual(values = c("Up-regulated" = "#1e88e5", "Down-regulated" = "#e53935", "Not significant" = "#b0bec5"), name = NULL) +
+      theme_bw(base_family = "Arial", base_size = 11) +
+      theme(
+        panel.grid = element_blank(),
+        legend.position = "top",
+        plot.margin = margin(10, 10, 10, 10, "mm"),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 14, hjust = 0.5, face = "bold")
+      )
+  }, res = 300)
+  
+
+  output$expr_labeled_genes <- renderDT({
+    labeled_genes <- expr_plot_data()$labeled_genes
+    
+    if (nrow(labeled_genes) == 0) {
+      return(datatable(
+        data.frame(Message = "No significant genes to display"),
+        rownames = FALSE,
+        options = list(dom = "t", ordering = FALSE)
+      ))
+    }
+    
+    datatable(
+      labeled_genes,
+      rownames = FALSE,
+      filter = "top",
+      extensions = c("Buttons", "Scroller"),
+      options = list(
+        scrollY = 260,
+        scrollX = TRUE,
+        scroller = TRUE,
+        pageLength = 10,
+        dom = "Bfrtip",
+        buttons = c("excel", "csv"),
+        autoWidth = TRUE,
+        searchHighlight = TRUE
+      )
+    ) %>%
+      formatRound(c("AveExpr", "logFC", "adjPval"), 4) %>%
+      formatStyle(
+        columns = "sig",
+        color = styleEqual(c("Up-regulated", "Down-regulated"), c("#1e88e5", "#e53935")),
+        fontWeight = "bold"
+      )
+  }, server = TRUE)
+  
+  # -------------------------- 4. Gene Expression Explorer --------------------------
+  gene_search_data <- eventReactive(input$search_gene, {
+    req(input$target_genes, input$expression_condition)
+    data <- summary_data_base()
+    
+
+    target_genes <- unlist(strsplit(input$target_genes, ","))
+    target_genes <- trimws(target_genes)
+    target_genes <- target_genes[target_genes != ""]
+    
+    if (length(target_genes) == 0) {
+      showNotification("Please enter valid gene names (comma separated)", type = "error", duration = 3)
+      return(NULL)
+    }
+    
+
+    gene_data <- data[data$GeneID %in% target_genes, ]
+    
+    if (nrow(gene_data) == 0) {
+      showNotification(paste("No data found for genes:", paste(target_genes, collapse = ", ")), type = "warning", duration = 3)
+      return(NULL)
+    }
+    
+
+    if (input$expression_condition %in% colnames(gene_data)) {
+      gene_data[[input$expression_condition]] <- factor(
+        gene_data[[input$expression_condition]],
+        levels = get_custom_order(input$expression_condition, unique(gene_data[[input$expression_condition]]))
+      )
+    }
+    
+
+    expr_summary <- gene_data %>%
+      group_by(GeneID, .data[[input$expression_condition]]) %>%
+      summarise(
+        Mean_AveExpr = mean(AveExpr, na.rm = TRUE),
+        SD_AveExpr = sd(AveExpr, na.rm = TRUE),
+        n = n(),
+        .groups = "drop"
+      ) %>%
+      rename(Condition = !!input$expression_condition)
+    
+
+    if ("Condition" %in% colnames(expr_summary)) {
+      expr_summary$Condition <- factor(
+        expr_summary$Condition,
+        levels = get_custom_order(input$expression_condition, unique(expr_summary$Condition))
+      )
+    }
+    
+    return(list(
+      raw_data = gene_data,
+      summary_data = expr_summary,
+      target_genes = target_genes,
+      condition = input$expression_condition
+    ))
+  })
+  
+
+  output$gene_expr_plot <- renderPlot({
+    req(gene_search_data())
+    data_list <- gene_search_data()
+    raw_data <- data_list$raw_data
+    summary_data <- data_list$summary_data
+    condition <- data_list$condition
+    
+    if (is.null(raw_data) || nrow(raw_data) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0, y = 0, label = "No gene expression data to plot", size = 4, color = "#546e7a") +
+               theme_minimal() + theme(panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank()))
+    }
+    
+
+    if (input$plot_style == "Bar Plot (Mean ± SD)") {
+      p <- ggplot(summary_data, aes(x = Condition, y = Mean_AveExpr, fill = GeneID)) +
+        geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.8) +
+        geom_errorbar(
+          aes(ymin = Mean_AveExpr - SD_AveExpr, ymax = Mean_AveExpr + SD_AveExpr),
+          position = position_dodge(width = 0.8),
+          width = 0.2,
+          color = "black"
+        ) +
+        labs(x = condition, y = "Average Expression (AveExpr)", title = "Gene Expression (Mean ± SD)")
+    } else if (input$plot_style == "Violin Plot") {
+      p <- ggplot(raw_data, aes(x = .data[[condition]], y = AveExpr, fill = GeneID)) +
+        geom_violin(alpha = 0.8, scale = "width") +
+        geom_jitter(aes(color = GeneID), size = 1, alpha = 0.6, position = position_jitter(width = 0.2)) +
+        labs(x = condition, y = "Average Expression (AveExpr)", title = "Gene Expression (Violin Plot)")
+    } else { # Box Plot
+      p <- ggplot(raw_data, aes(x = .data[[condition]], y = AveExpr, fill = GeneID)) +
+        geom_boxplot(alpha = 0.8, position = position_dodge(width = 0.8)) +
+        geom_jitter(aes(color = GeneID), size = 1, alpha = 0.6, position = position_jitter(width = 0.2)) +
+        labs(x = condition, y = "Average Expression (AveExpr)", title = "Gene Expression (Box Plot)")
+    }
+    
+
+    p + 
+      scale_fill_viridis_d(option = "plasma") +
+      scale_color_viridis_d(option = "plasma") +
+      theme_bw(base_family = "Arial", base_size = 11) +
+      theme(
+        panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.position = "right",
+        plot.margin = margin(10, 10, 10, 10, "mm"),
+        plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 10)
+      )
+  }, res = 300)
+  
+
+  output$gene_expr_table <- renderDT({
+    req(gene_search_data())
+    data_list <- gene_search_data()
+    raw_data <- data_list$raw_data
+    
+    if (is.null(raw_data) || nrow(raw_data) == 0) {
+      return(datatable(
+        data.frame(Message = "No gene expression data to display"),
+        rownames = FALSE,
+        options = list(dom = "t")
+      ))
+    }
+    
+    core_cols <- c("GeneID", input$expression_condition, "AveExpr", "logFC", "adjPval", "sig")
+    show_cols <- intersect(core_cols, colnames(raw_data))
+    display_data <- raw_data[, show_cols]
+    
+    datatable(
+      display_data,
+      rownames = FALSE,
+      filter = "top",
+      extensions = c("Buttons", "Scroller"),
+      options = list(
+        scrollY = 360,
+        scrollX = TRUE,
+        scroller = TRUE,
+        pageLength = 10,
+        dom = "Bfrtip",
+        buttons = c("excel", "csv"),
+        autoWidth = TRUE,
+        searchHighlight = TRUE
+      )
+    ) %>%
+      formatRound(c("AveExpr", "logFC", "adjPval"), 4) %>%
+      formatStyle(
+        columns = "sig",
+        color = styleEqual(c("Up-regulated", "Down-regulated", "Not significant"), c("#1e88e5", "#e53935", "#b0bec5")),
+        fontWeight = "bold"
+      )
+  }, server = TRUE)
+  
+
+  observeEvent(input$download_count, {
+    global_data <- filtered_global_data()
+    req(global_data$deg_count > 0, "No DEGs to download!")
+    
+    count_df <- deg_count_filtered()
+    filter_var <- global_data$filter_var
+    
+    filename <- paste0(
+      "DEGCount_", filter_var, "_", gsub(" ", "_", global_data$filter_val),
+      "_logFC", input$logfc_cutoff, "_adjP", input$adjp_cutoff, "_", Sys.Date(), ".png"
+    )
+    
+    ggsave(
+      filename = filename,
+      plot = ggplot(count_df, aes(x = FilterVar, y = Count, fill = Regulation)) +
+        geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.8) +
+        geom_text(aes(label = Count), position = position_dodge(width = 0.8), vjust = -0.5, size = 3, color = "black", fontface = "bold") +
+        scale_fill_manual(values = c("Up-regulated" = "#1e88e5", "Down-regulated" = "#e53935"), name = NULL) +
+        labs(x = filter_var, y = "Number of DEGs", title = paste0("DEG Count Summary (Total: ", global_data$deg_count, ")")) +
+        theme_bw(base_family = "Arial", base_size = 11) +
+        theme(panel.grid = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top",
+              plot.title = element_text(size = 14, hjust = 0.5, face = "bold")),
+      width = 16, height = 8, dpi = 300, units = "in"
+    )
+    showNotification(paste0("DEG Count Plot saved as: ", filename), type = "message", duration = 3)
+  })
+  
+  observeEvent(input$download_expr_plot, {
+    global_data <- filtered_global_data()
+    req(global_data$deg_count > 0, "No DEGs to download!")
+    
+    data_list <- expr_plot_data()
+    plot_data <- data_list$plot_data
+    labeled_genes <- data_list$labeled_genes
+    deg_count <- data_list$deg_count
+    
+    plot_type <- gsub(" ", "", input$plot_type)
+    filename <- paste0(
+      plot_type, "_", global_data$filter_var, "_", gsub(" ", "_", global_data$filter_val),
+      "_logFC", input$logfc_cutoff, "_adjP", input$adjp_cutoff, "_", Sys.Date(), ".png"
+    )
+    
+    if (input$plot_type == "Volcano Plot") {
+      p <- ggplot(plot_data, aes(x = logFC, y = -log10(adjPval), color = sig)) +
+        geom_point(alpha = 0.8, size = 1.2) +
+        geom_vline(xintercept = c(-input$logfc_cutoff, input$logfc_cutoff), linetype = "dashed", color = "gray50") +
+        geom_hline(yintercept = -log10(input$adjp_cutoff), linetype = "dashed", color = "gray50") +
+        geom_label_repel(
+          data = labeled_genes, aes(label = GeneID), size = 2, fill = "white", color = "black", alpha = 0.8,
+          box.padding = unit(0.3, "lines"), point.padding = unit(0.5, "lines"),
+          segment.color = "gray50", segment.size = 0.3, show.legend = FALSE, max.overlaps = 20
+        ) +
+        scale_color_manual(values = c("Up-regulated" = "#1e88e5", "Down-regulated" = "#e53935", "Not significant" = "#b0bec5"), name = NULL) +
+        labs(x = "log2(Fold Change)", y = "-log10(Adjusted P-value)", title = paste0("Volcano Plot (Total DEGs: ", deg_count, ")")) +
+        theme_bw(base_family = "Arial", base_size = 11) +
+        theme(panel.grid = element_blank(), legend.position = "top",
+              plot.title = element_text(size = 14, hjust = 0.5, face = "bold"))
+    } else {
+      p <- ggplot(plot_data, aes(x = AveExpr, y = logFC, color = sig)) +
+        geom_point(alpha = 0.8, size = 1.2) +
+        geom_hline(yintercept = c(-input$logfc_cutoff, input$logfc_cutoff), linetype = "dashed", color = "gray50") +
+        geom_label_repel(
+          data = labeled_genes, aes(label = GeneID), size = 2, fill = "white", color = "black", alpha = 0.8,
+          box.padding = unit(0.3, "lines"), point.padding = unit(0.5, "lines"),
+          segment.color = "gray50", segment.size = 0.3, show.legend = FALSE, max.overlaps = 20
+        ) +
+        scale_color_manual(values = c("Up-regulated" = "#1e88e5", "Down-regulated" = "#e53935", "Not significant" = "#b0bec5"), name = NULL) +
+        labs(x = "Average Expression", y = "log2(Fold Change)", title = paste0("MA Plot (Total DEGs: ", deg_count, ")")) +
+        theme_bw(base_family = "Arial", base_size = 11) +
+        theme(panel.grid = element_blank(), legend.position = "top",
+              plot.title = element_text(size = 14, hjust = 0.5, face = "bold"))
+    }
+    
+    ggsave(
+      filename = filename,
+      plot = p,
+      width = 16, height = 16, dpi = 300, units = "in"
+    )
+    showNotification(paste0(input$plot_type, " saved as: ", filename), type = "message", duration = 3)
+  })
+}
+
+shinyApp(ui = ui, server = server)
